@@ -1,0 +1,39 @@
+# Builds n8n with npm on a roomy runner and publishes it as a release asset, so
+# small servers (orcvm1: 1 GB RAM) can update by download + symlink swap.
+# Runner matches orcvm1: ubuntu-24.04 x64 (glibc 2.39), Node 24.18.0.
+name: build-n8n
+on:
+  schedule:
+    - cron: '30 19 * * *'   # 01:00 IST, before orcvm1's 03:00 update window
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'n8n version (default: npm n8n@stable)'
+        required: false
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.18.0'
+      - name: Pick version
+        id: v
+        run: |
+          v="${{ inputs.version }}"; [ -n "$v" ] || v=$(npm view n8n@stable version)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if gh release view "n8n-$v" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then echo "exists=1" >> "$GITHUB_OUTPUT"; fi
+      - name: Build and publish
+        if: steps.v.outputs.exists != '1'
+        run: |
+          v=${{ steps.v.outputs.version }}
+          npm install -g --prefix "$RUNNER_TEMP/p" "n8n@$v" --no-audit --no-fund --loglevel=error
+          test "$(node -p "require('$RUNNER_TEMP/p/lib/node_modules/n8n/package.json').version")" = "$v"
+          tar czf n8n.tgz -C "$RUNNER_TEMP/p/lib/node_modules" n8n
+          sha256sum n8n.tgz > n8n.tgz.sha256
+          gh release create "n8n-$v" n8n.tgz n8n.tgz.sha256 -R "$GITHUB_REPOSITORY" \
+            --title "n8n $v" --notes "npm n8n@$v, built on ubuntu-24.04 x64 with Node 24.18.0."
